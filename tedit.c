@@ -274,7 +274,7 @@ void DeleteChar(void) {
         RowAppendString(&editor.row[editor.cy-1],row->chars,row->size);
         DeleteRow(editor.cy);
         editor.cy--;
-        
+
     }
 }
 void InsertChar(int c) {
@@ -508,3 +508,4 @@ int main(int argc, char ** argv) {
     
     return 0;
 }
+//next step https://viewsourcecode.org/snaptoken/kilo/05.aTextEditor.html#the-enter-key
