@@ -11,32 +11,84 @@
 #include <errno.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
+#include <time.h>
+#include <stdarg.h>
+#include <fcntl.h>
 #include "appbuf.c"
 
 
 #define TEDIT_V "0.1.0"
+#define TEDIT_TAB 4
+#define TEDIT_QUIT_TIME 2
 typedef struct {
     int size;
     char * chars;
+    int RenderSize;
+    char * render;
 } EditorRow;
 struct GlobalConfig {
     int cx;
     int cy;
+    int rx;
     int RowOffset;
+    int ColumnOffset;
     int screenrows;
     int screencols;
     struct termios _orig;
     int numrows;
     EditorRow *row;
+    char * filename;
+    char StatusMsg[80];
+    time_t StatusTime;
+    int dirty;
 };
 
 struct GlobalConfig editor;
 void TildeColumn(struct AppendBuffer * ab);
-
+void SaveFile(void);
+void SetStatusMsg(const char *fmt,...);
 #define ctrl(k) ((k) & 0x1f)
+int CharsToRender(EditorRow * row,int cx) {
+    int rx=0;
+    for (int j=0;j<cx;j++) {
+        if (row->chars[j]=='\t') rx+=(TEDIT_TAB-1)-(rx%TEDIT_TAB);
+        rx++;
+    }
+    return rx;
+}
 void ScrollScreen(void) {
+    editor.rx=editor.cx;
+    if (editor.cy<editor.numrows) editor.rx=CharsToRender(&editor.row[editor.cy],editor.cx);
     if (editor.cy<editor.RowOffset) editor.RowOffset=editor.cy;
     if (editor.cy>editor.RowOffset+editor.screenrows) editor.RowOffset=editor.cy-editor.screenrows-1;
+
+    if (editor.cx<editor.ColumnOffset) editor.ColumnOffset=editor.rx;
+    if (editor.cx>=editor.ColumnOffset+editor.screencols) editor.ColumnOffset=editor.rx-editor.screencols+1;
+}
+void DrawStatusBar(struct AppendBuffer * ab) {
+    AppendAB(ab,"\x1b[7m",4);
+    char status[80],rstatus[80];
+    int len=snprintf(status,sizeof(status),"%.20s - %d lines %s",editor.filename?editor.filename:"[New File]",editor.numrows,editor.dirty?"(modified)":"");
+    int rlen=snprintf(rstatus,sizeof(rstatus),"line %d",editor.cy+1);
+    if (len>editor.screencols) len=editor.screencols;
+    AppendAB(ab,status,len);
+    while (len<editor.screencols) {
+        if (editor.screencols-len==rlen) {
+            AppendAB(ab,rstatus,rlen);
+            break;
+        } else {
+            AppendAB(ab," ",1);
+            len++;
+        }
+    }
+    AppendAB(ab,"\x1b[m",3);
+    AppendAB(ab,"\r\n",2);
+}
+void DrawSecondBar(struct AppendBuffer * ab) {
+    AppendAB(ab,"\x1b[K",3);
+    int msglen=strlen(editor.StatusMsg);
+    if (msglen>editor.screencols) msglen=editor.screencols;
+    if (msglen && time(NULL)-editor.StatusTime<5) AppendAB(ab,editor.StatusMsg,msglen);
 }
 void refresh() {
     ScrollScreen();
@@ -45,9 +97,10 @@ void refresh() {
     AppendAB(&_ab,"\x1b[H", 3);
 
     TildeColumn(&_ab);
-
+    DrawStatusBar(&_ab);
+    DrawSecondBar(&_ab);
     char buf[32];
-    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (editor.cy-editor.RowOffset) + 1, editor.cx + 1);
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (editor.cy-editor.RowOffset) + 1,( (editor.rx-editor.ColumnOffset) + 1));
     AppendAB(&_ab, buf, strlen(buf));
     AppendAB(&_ab, "\x1b[?25h", 6);
 
@@ -55,7 +108,13 @@ void refresh() {
     FreeAB(&_ab);
 }
 // VT100
-
+void SetStatusMsg(const char *fmt,...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(editor.StatusMsg, sizeof(editor.StatusMsg), fmt, ap);
+    va_end(ap);
+    editor.StatusTime = time(NULL);
+}
 void die(const char * msg) {
     refresh();
     perror(msg);
@@ -80,6 +139,7 @@ void RawMode(void) {
     if (tcsetattr(STDIN_FILENO,TCSAFLUSH,&raw)==-1) die("tcsetattr");
 }
 enum SpecialKeys {
+    BKSP=127,
     ARROW_LEFT = 4242, // H2G2 (value is not important, just out of char type range)
     ARROW_RIGHT,
     ARROW_UP,
@@ -134,13 +194,105 @@ int ReadKey(void) {
     } 
     return cur;
 }
+void UpdateRow(EditorRow * row) {
+    int tabs=0;
+    for (int i=0;i<row->size;i++) {
+        if (row->chars[i]=='\t') tabs++;
+    }
+
+    free(row->render);
+    row->render=malloc(row->size+1+tabs*(TEDIT_TAB-1));
+    int idx=0;
+    for (int j=0;j<row->size;j++) {
+        if (row->chars[j]=='\t') {
+            row->render[idx++]=' ';
+            while (idx % TEDIT_TAB != 0) row->render[idx++] = ' ';
+        } else {
+            row->render[idx++]=row->chars[j];
+        }
+    }
+    row->render[idx]=0;
+    row->RenderSize=idx;
+}
+void NewRow(char * s,size_t len) {
+    editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
+
+    int at = editor.numrows;
+    editor.row[at].size=len;
+    editor.row[at].chars=malloc(len + 1);
+    memcpy(editor.row[at].chars,s,len);
+    editor.row[at].chars[len]='\0';
+    editor.row[at].RenderSize=0;
+    editor.row[at].render=NULL;
+    
+    UpdateRow(&editor.row[at]);
+    editor.numrows++;
+    editor.dirty++;
+}
+void FreeRow(EditorRow * row) {
+    free(row->render);
+    free(row->chars);
+}
+void DeleteRow(int at) {
+    if (at<0 || at>=editor.numrows) return;
+    FreeRow(&editor.row[at]);
+    memmove(&editor.row[at], &editor.row[at + 1], sizeof(EditorRow) * (editor.numrows - at - 1));
+}
+void RowInsertChar(EditorRow * row, int at, int c) {
+    if (at<0 || at>row->size) at=row->size;
+    row->chars=realloc(row->chars,row->size+2);
+    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+    row->size++;
+    row->chars[at]=c;
+    UpdateRow(row);
+    editor.dirty++;
+}
+void RowDeleteChar(EditorRow * row, int at) {
+    if (at<0 || at>=row->size) return;
+    memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
+    row->size--;
+    UpdateRow(row);
+    editor.dirty++;
+}
+void RowAppendString(EditorRow * row,char * s, size_t len) {
+    row->chars = realloc(row->chars, row->size + len + 1);
+    memcpy(&row->chars[row->size], s, len);
+    row->size += len;
+    row->chars[row->size] = '\0';
+    UpdateRow(row);
+    editor.dirty++;
+}
+void DeleteChar(void) {
+    if (editor.cy==editor.numrows) return;
+    if (editor.cx==0 && editor.cy==0) return;
+    EditorRow *row = &editor.row[editor.cy];
+    if (editor.cx > 0) {
+        RowDeleteChar(row, editor.cx - 1);
+        editor.cx--;
+    } else {
+        editor.cx=editor.row[editor.cy-1].size;
+        RowAppendString(&editor.row[editor.cy-1],row->chars,row->size);
+        DeleteRow(editor.cy);
+        editor.cy--;
+        
+    }
+}
+void InsertChar(int c) {
+    if (editor.cy==editor.numrows) NewRow("",0);
+    RowInsertChar(&editor.row[editor.cy],editor.cx,c);
+    editor.cx++;
+}
+
 void MoveCursor(int key) {
+    EditorRow * row=(editor.cy>=editor.numrows)?NULL:&editor.row[editor.cy];
     switch (key) {
         case ARROW_LEFT:
             if (editor.cx!=0) editor.cx--;
+            else if (editor.cy>0) editor.cy--, editor.cx=editor.row[editor.cy].size;
             break;
         case ARROW_RIGHT:
-            if (editor.cx!=editor.screencols-1) editor.cx++;
+            if (row && editor.cx<row->size) editor.cx++;
+            else if (row && editor.cx==row->size) editor.cy++,editor.cx=0;
             break;
         case ARROW_UP:
             if (editor.cy!=0) editor.cy--;
@@ -149,13 +301,35 @@ void MoveCursor(int key) {
             if (editor.cy<editor.numrows+1) editor.cy++;
             break;
     }
+    row=(editor.cy>=editor.numrows)?NULL:&editor.row[editor.cy];
+    int rowlen=row?row->size:0;
+    if (editor.cx>rowlen) {
+        editor.cx=rowlen;
+    }
 }
 void ProcessKey() {
+    static int QuitTimes=TEDIT_QUIT_TIME;
     int cur=ReadKey();
 
     switch (cur) {
+        case '\r':
+            //todo
+            break;
+        case BKSP:
+        case ctrl('h'):
+        case DELETE_KEY:
+            DeleteChar();
+            break;
         case ctrl('q'):
+            if (editor.dirty && QuitTimes>0) {
+                SetStatusMsg("Unsaved Changes, press Ctrl-Q %d more time%s to quit.",QuitTimes,QuitTimes==1?"":"s");
+                QuitTimes--;
+                return;
+            }
             refresh();
+            for (int j=0;j<editor.screencols+1;j++) {
+                printf("\n");
+            }
             exit(0);
             break;
         case ARROW_UP:
@@ -167,16 +341,29 @@ void ProcessKey() {
         case PAGE_UP:
         case PAGE_DOWN:
             {
-                int screencopy=editor.screenrows;
-                while (screencopy--) MoveCursor(cur==PAGE_UP?ARROW_UP:ARROW_DOWN);
+                if (cur==PAGE_UP) editor.cy=editor.RowOffset;
+                else if (cur==PAGE_DOWN) {
+                    editor.cy=editor.RowOffset+editor.screenrows-1;
+                    if (editor.cy>editor.numrows) editor.cy=editor.numrows;
+                }
             }
         case HOME_KEY:
             editor.cx=0;
             break;
         case END_KEY:
-            editor.cx=editor.screencols-1;
+            if (editor.cy<editor.numrows) editor.cx=editor.row[editor.cy].size;
+            break;
+        case ctrl('l'):
+        case '\x1b':
+            break;
+        case ctrl('s'):
+            SaveFile();
+            break;
+        default:
+            InsertChar(cur);
             break;
     }
+    QuitTimes=TEDIT_QUIT_TIME;
 }
 int CursorPosition(int * rows, int * cols) {
     char buf[32];
@@ -207,7 +394,7 @@ int WinSize(int * rows, int * columns) {
 }
 
 void TildeColumn(struct AppendBuffer * ab) {
-    for (int y=0; y<editor.screenrows;y++) {
+    for (int y=0; y<editor.screenrows-2;y++) {
         int filerow=y+editor.RowOffset;
         if (filerow>editor.numrows) {
             if (editor.numrows==0 && y == editor.screenrows / 3) {
@@ -225,27 +412,40 @@ void TildeColumn(struct AppendBuffer * ab) {
                 AppendAB(ab, "~", 1);
             }
         } else {
-            int len=editor.row[filerow].size;
+            int len=0;
+            if (editor.row) {
+                len = editor.row[filerow].RenderSize - editor.ColumnOffset;
+            }
+            if (len<0) len=0;
             if (len>editor.screencols) len=editor.screencols;
-            AppendAB(ab,editor.row[filerow].chars,len);
+            if (editor.row && editor.row[filerow].size) AppendAB(ab,&editor.row[filerow].render[editor.ColumnOffset],len);
         }
         AppendAB(ab, "\x1b[K", 3);
-        if (y < editor.screenrows - 1) {
             AppendAB(ab, "\r\n", 2);
         }
-    }
 }
-void NewRow(char * s,size_t len) {
-    editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
 
-    int at = editor.numrows;
-    editor.row[at].size=len;
-    editor.row[at].chars=malloc(len + 1);
-    memcpy(editor.row[at].chars,s,len);
-    editor.row[at].chars[len]='\0';
-    editor.numrows++;
+
+char * RowsToString(int * buflen) {
+    int totlen=0;
+    for (int j=0;j<editor.numrows;j++) {
+        totlen+=editor.row[j].size+1;
+    }
+    *buflen=totlen;
+
+    char * buf=malloc(totlen);
+    char * p=buf;
+    for (int j=0;j<editor.numrows;j++) {
+        memcpy(p,editor.row[j].chars,editor.row[j].size);
+        p+=editor.row[j].size;
+        *p='\n';
+        p++;
+    }
+    return buf;
 }
 void OpenFile(char * filename) {
+    free(editor.filename);
+    editor.filename=strdup(filename);
     FILE * fp=fopen(filename,"r");
 
     if (!fp) die("fopen");
@@ -258,13 +458,40 @@ void OpenFile(char * filename) {
     }
     free(line);
     fclose(fp);
+    editor.dirty=0;
+}
+void SaveFile(void) {
+    if (editor.filename == NULL) return;
+    int len;
+    char *buf = RowsToString(&len);
+    int fd = open(editor.filename, O_RDWR | O_CREAT, 0644);
+    if (fd != -1) {
+        if (ftruncate(fd, len) != -1) {
+            if (write(fd, buf, len) == len) {
+                close(fd);
+                free(buf);
+                SetStatusMsg("%d bytes written to disk", len);
+                return;
+            }
+        }
+        close(fd);
+    }
+    free(buf);
+    SetStatusMsg("I/O error: %s",strerror(errno));
+    editor.dirty=0;
 }
 void init(void) {
     editor.cx=0;
     editor.cy=0;
+    editor.rx=0;
     editor.RowOffset=0;
+    editor.ColumnOffset=0;
     editor.numrows=0;
     editor.row=NULL;
+    editor.screenrows-=2;
+    editor.filename=NULL;
+    editor.dirty=0;
+    editor.StatusMsg[0]='\0';
     if (WinSize(&editor.screenrows,&editor.screencols)==-1) die("WinSize");
 }
 int main(int argc, char ** argv) {
@@ -273,10 +500,11 @@ int main(int argc, char ** argv) {
     if (argc>=2) {
         OpenFile(argv[1]);
     }
-
+    SetStatusMsg("Ctrl-Q to Quit");
     while (true) {
         refresh();
         ProcessKey();
     }
+    
     return 0;
 }
