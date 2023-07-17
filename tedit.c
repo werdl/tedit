@@ -25,6 +25,7 @@ typedef struct {
     char * chars;
     int RenderSize;
     char * render;
+    unsigned char * hl;
 } EditorRow;
 struct GlobalConfig {
     int cx;
@@ -42,7 +43,10 @@ struct GlobalConfig {
     time_t StatusTime;
     int dirty;
 };
-
+enum HighlightColors {
+    HL_NORMAL=0,
+    HL_NUMBER
+};
 struct GlobalConfig editor;
 void TildeColumn(struct AppendBuffer * ab);
 void SaveFile(void);
@@ -206,6 +210,22 @@ int ReadKey(void) {
     } 
     return cur;
 }
+void UpdateSyntax(EditorRow * row) {
+    row->hl=realloc(row->hl,row->RenderSize);
+    memset(row->hl,HL_NORMAL,row->RenderSize);
+
+    for (int i=0;i<row->RenderSize;i++) {
+        if (isdigit(row->render[i])) {
+            row->hl[i]=HL_NUMBER;
+        }
+    }
+}
+int SyntaxToColor(int hl) {
+    switch (hl) {
+        case HL_NUMBER: return 31;
+        default: return 37;
+    }
+}
 void UpdateRow(EditorRow * row) {
     int tabs=0;
     for (int i=0;i<row->size;i++) {
@@ -225,6 +245,7 @@ void UpdateRow(EditorRow * row) {
     }
     row->render[idx]=0;
     row->RenderSize=idx;
+    UpdateSyntax(row);
 }
 void NewRow(int at, char * s,size_t len) {
     if (at<0 || at > editor.numrows) return;
@@ -238,7 +259,7 @@ void NewRow(int at, char * s,size_t len) {
     editor.row[at].chars[len]='\0';
     editor.row[at].RenderSize=0;
     editor.row[at].render=NULL;
-    
+    editor.row[at].hl=NULL;    
     UpdateRow(&editor.row[at]);
     editor.numrows++;
     editor.dirty++;
@@ -246,6 +267,7 @@ void NewRow(int at, char * s,size_t len) {
 void FreeRow(EditorRow * row) {
     free(row->render);
     free(row->chars);
+    free(row->hl);
 }
 void DeleteRow(int at) {
     if (at<0 || at>=editor.numrows) return;
@@ -524,18 +546,23 @@ void TildeColumn(struct AppendBuffer * ab) {
             if (len>editor.screencols) len=editor.screencols;
             // if (editor.row && editor.row[filerow].size) AppendAB(ab,&editor.row[filerow].render[editor.ColumnOffset],len);
             char * c=&editor.row[filerow].render[editor.ColumnOffset];
+            unsigned char * hl=&editor.row[filerow].hl[editor.ColumnOffset];
             for (int j=0;j<len;j++) {
-                if (isdigit(c[j])) {
-                    AppendAB(ab, "\x1b[31m", 5);
-                    AppendAB(ab, &c[j], 1);
-                    AppendAB(ab, "\x1b[39m", 5);
+                if (hl[j]==HL_NORMAL) {
+                    AppendAB(ab,"\x1b[39m",5);
+                    AppendAB(ab,&c[j],1);
                 } else {
+                    int color = SyntaxToColor(hl[j]);
+                    char buf[16];
+                    int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                    AppendAB(ab, buf, clen);
                     AppendAB(ab, &c[j], 1);
                 }
             }
+            AppendAB(ab, "\x1b[39m", 5);
         }
         AppendAB(ab, "\x1b[K", 3);
-            AppendAB(ab, "\r\n", 2);
+        AppendAB(ab, "\r\n", 2);
         }
 }
 
