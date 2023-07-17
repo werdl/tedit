@@ -519,38 +519,37 @@ int WinSize(int * rows, int * columns) {
     }
 }
 
-void TildeColumn(struct AppendBuffer * ab) {
-    for (int y=0; y<editor.screenrows-2;y++) {
-        int filerow=y+editor.RowOffset;
-        if (filerow>editor.numrows) {
-            if (editor.numrows==0 && y == editor.screenrows / 3) {
-                char welcome[80];
-                int welcomelen = snprintf(welcome, sizeof(welcome),
-                    "Tedit TExt EDITor -- version %s", TEDIT_V);
-                int padding = (editor.screencols - welcomelen) / 2;
-                if (padding) {
-                    AppendAB(ab, "~", 1);
-                    padding--;
-                }
-                while (padding--) AppendAB(ab, " ", 1);
-                AppendAB(ab,welcome,welcomelen);
-            } else {
+void TildeColumn(struct AppendBuffer *ab) {
+    int y;
+    for (y = 0; y < editor.screenrows-4; y++) {
+        int filerow = y + editor.RowOffset;
+        if (filerow >= editor.numrows) {
+        if (editor.numrows == 0 && y == editor.screenrows / 3) {
+            char welcome[80];
+            int welcomelen = snprintf(welcome, sizeof(welcome),
+            "Tedit editor -- version %s", TEDIT_V);
+            if (welcomelen > editor.screencols) welcomelen = editor.screencols;
+            int padding = (editor.screencols - welcomelen) / 2;
+            if (padding) {
                 AppendAB(ab, "~", 1);
+                padding--;
             }
+            while (padding--) AppendAB(ab, " ", 1);
+            AppendAB(ab, welcome, welcomelen);
         } else {
-            int len=0;
-            if (editor.row) {
-                len = editor.row[filerow].RenderSize - editor.ColumnOffset;
-            }
-            if (len<0) len=0;
-            if (len>editor.screencols) len=editor.screencols;
-            // if (editor.row && editor.row[filerow].size) AppendAB(ab,&editor.row[filerow].render[editor.ColumnOffset],len);
-            char * c=&editor.row[filerow].render[editor.ColumnOffset];
-            unsigned char * hl=&editor.row[filerow].hl[editor.ColumnOffset];
-            for (int j=0;j<len;j++) {
-                if (hl[j]==HL_NORMAL) {
-                    AppendAB(ab,"\x1b[39m",5);
-                    AppendAB(ab,&c[j],1);
+            AppendAB(ab, "~", 1);
+        }
+        } else {
+            int len = editor.row[filerow].RenderSize - editor.ColumnOffset;
+            if (len < 0) len = 0;
+            if (len > editor.screencols) len = editor.screencols;
+            char *c = &editor.row[filerow].render[editor.ColumnOffset];
+            unsigned char *hl = &editor.row[filerow].hl[editor.ColumnOffset];
+            int j;
+            for (j = 0; j < len; j++) {
+                if (hl[j] == HL_NORMAL) {
+                    AppendAB(ab, "\x1b[39m", 5);
+                    AppendAB(ab, &c[j], 1);
                 } else {
                     int color = SyntaxToColor(hl[j]);
                     char buf[16];
@@ -561,9 +560,10 @@ void TildeColumn(struct AppendBuffer * ab) {
             }
             AppendAB(ab, "\x1b[39m", 5);
         }
+
         AppendAB(ab, "\x1b[K", 3);
         AppendAB(ab, "\r\n", 2);
-        }
+    }
 }
 
 
