@@ -56,6 +56,18 @@ int CharsToRender(EditorRow * row,int cx) {
     }
     return rx;
 }
+int RenderToChars(EditorRow *row, int rx) {
+  int cur_rx = 0;
+  int cx;
+  for (cx = 0; cx < row->size; cx++) {
+    if (row->chars[cx] == '\t')
+      cur_rx += (TEDIT_TAB - 1) - (cur_rx % TEDIT_TAB);
+    cur_rx++;
+    if (cur_rx > rx) return cx;
+  }
+  return cx;
+}
+
 void ScrollScreen(void) {
     editor.rx=editor.cx;
     if (editor.cy<editor.numrows) editor.rx=CharsToRender(&editor.row[editor.cy],editor.cx);
@@ -296,7 +308,7 @@ void InsertNewline(void) {
     editor.cy++;
     editor.cx=0;
 }
-char * PromptUser(char * prompt) {
+char * PromptUser(char * prompt, void (*callback)(char *, int)) {
     size_t bufsize=128;
     char * buf=malloc(bufsize);
     size_t buflen=0;
@@ -306,9 +318,17 @@ char * PromptUser(char * prompt) {
         refresh();
         int c=ReadKey();
 
-        if (c=='\r') {
+        if (c == DELETE_KEY || c == ctrl('h') || c == BKSP) {
+            if (buflen != 0) buf[--buflen] = '\0';
+        } else if (c=='\x1b') {
+            SetStatusMsg("Cancelled Prompt");
+            if (callback) callback(buf,c);
+            free(buf);
+            return NULL;
+        } else if (c=='\r') {
             if (buflen!=0) {
                 SetStatusMsg("");
+                if (callback) callback(buf,c);
                 return buf;
             }
         } else if (!iscntrl(c) && c<128) {
@@ -319,6 +339,7 @@ char * PromptUser(char * prompt) {
             buf[buflen++]=c;
             buf[buflen]='\0';
         }
+        if (callback) callback(buf,c);
     }
 }
 void MoveCursor(int key) {
@@ -343,6 +364,48 @@ void MoveCursor(int key) {
     int rowlen=row?row->size:0;
     if (editor.cx>rowlen) {
         editor.cx=rowlen;
+    }
+}
+void FindStrCallback(char * query, int key) {
+
+    static int LastMatch=-1;
+    static int direction=1;
+
+    if (key == '\r' || key == '\x1b') {
+        LastMatch=-1;
+        direction=1;
+        return;
+    } else if (key == ARROW_RIGHT || key == ARROW_DOWN) {
+        direction = 1;
+    } else if (key == ARROW_LEFT || key == ARROW_UP) {
+        direction = -1;
+    } else {
+        LastMatch = -1;
+        direction = 1;
+    }
+    if (query==NULL) return;
+    if (LastMatch == -1) direction = 1;
+    int current = LastMatch;
+    for (int i=0;i<editor.numrows;i++) {
+        current+=direction;
+        if (current==-1) current=editor.numrows-1;
+        else if (current==editor.numrows) current=0;
+
+        EditorRow * row=&editor.row[current];
+        char * match=strstr(row->render,query);
+        if (match) {
+            LastMatch=current;
+            editor.cy=current;
+            editor.cx=RenderToChars(row,match-row->render);
+            editor.RowOffset=editor.numrows;
+            break;
+        }
+    }
+}
+void FindStr(void) {
+    char * query=PromptUser("Search: %s (ESC to cancel)",FindStrCallback);
+    if (query) {
+        free(query);
     }
 }
 void ProcessKey() {
@@ -396,6 +459,9 @@ void ProcessKey() {
             break;
         case ctrl('s'):
             SaveFile();
+            break;
+        case ctrl('f'):
+            FindStr();
             break;
         default:
             InsertChar(cur);
@@ -456,7 +522,17 @@ void TildeColumn(struct AppendBuffer * ab) {
             }
             if (len<0) len=0;
             if (len>editor.screencols) len=editor.screencols;
-            if (editor.row && editor.row[filerow].size) AppendAB(ab,&editor.row[filerow].render[editor.ColumnOffset],len);
+            // if (editor.row && editor.row[filerow].size) AppendAB(ab,&editor.row[filerow].render[editor.ColumnOffset],len);
+            char * c=&editor.row[filerow].render[editor.ColumnOffset];
+            for (int j=0;j<len;j++) {
+                if (isdigit(c[j])) {
+                    AppendAB(ab, "\x1b[31m", 5);
+                    AppendAB(ab, &c[j], 1);
+                    AppendAB(ab, "\x1b[39m", 5);
+                } else {
+                    AppendAB(ab, &c[j], 1);
+                }
+            }
         }
         AppendAB(ab, "\x1b[K", 3);
             AppendAB(ab, "\r\n", 2);
@@ -499,10 +575,12 @@ void OpenFile(char * filename) {
     editor.dirty=0;
 }
 void SaveFile(void) {
-    checkfile:
     if (editor.filename == NULL) {
-        editor.filename=PromptUser("Save as %s:");
-        goto checkfile;
+        editor.filename=PromptUser("Save as %s:",NULL);
+        if (editor.filename==NULL) {
+            SetStatusMsg("Aborted Save Operation");
+            return;
+        }
     }
     int len;
     char *buf = RowsToString(&len);
@@ -550,6 +628,4 @@ int main(int argc, char ** argv) {
     
     return 0;
 }
-//next step https://viewsourcecode.org/snaptoken/kilo/05.aTextEditor.html#the-enter-key
-//next step https://viewsourcecode.org/snaptoken/kilo/05.aTextEditor.html#the-enter-key
-//next step https://viewsourcecode.org/snaptoken/kilo/05.aTextEditor.html#the-enter-key
+//https://viewsourcecode.org/snaptoken/kilo/07.syntaxHighlighting.html#refactor-syntax-highlighting
