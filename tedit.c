@@ -311,13 +311,12 @@ char * PromptUser(char * prompt) {
                 SetStatusMsg("");
                 return buf;
             }
-        } else if (iscntrl(c) && c<128) {
+        } else if (!iscntrl(c) && c<128) {
             if (buflen==bufsize-1) {
                 bufsize*=2;
                 buf=realloc(buf,bufsize);
             }
             buf[buflen++]=c;
-            printf(buf);
             buf[buflen]='\0';
         }
     }
@@ -500,8 +499,10 @@ void OpenFile(char * filename) {
     editor.dirty=0;
 }
 void SaveFile(void) {
+    checkfile:
     if (editor.filename == NULL) {
         editor.filename=PromptUser("Save as %s:");
+        goto checkfile;
     }
     int len;
     char *buf = RowsToString(&len);
