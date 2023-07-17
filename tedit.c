@@ -214,10 +214,12 @@ void UpdateRow(EditorRow * row) {
     row->render[idx]=0;
     row->RenderSize=idx;
 }
-void NewRow(char * s,size_t len) {
-    editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
+void NewRow(int at, char * s,size_t len) {
+    if (at<0 || at > editor.numrows) return;
 
-    int at = editor.numrows;
+
+    editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
+    memmove(&editor.row[at+1],&editor.row[at],sizeof(EditorRow)*(editor.numrows-at));
     editor.row[at].size=len;
     editor.row[at].chars=malloc(len + 1);
     memcpy(editor.row[at].chars,s,len);
@@ -278,11 +280,48 @@ void DeleteChar(void) {
     }
 }
 void InsertChar(int c) {
-    if (editor.cy==editor.numrows) NewRow("",0);
+    if (editor.cy==editor.numrows) NewRow(editor.numrows,"",0);
     RowInsertChar(&editor.row[editor.cy],editor.cx,c);
     editor.cx++;
 }
+void InsertNewline(void) {
+    if (editor.cx==0) NewRow(editor.cy,"",0);
+    else {
+        EditorRow * row=&editor.row[editor.cy];
+        row=&editor.row[editor.cy];
+        row->size=editor.cx;
+        row->chars[row->size]='\0';
+        UpdateRow(row);
+    }
+    editor.cy++;
+    editor.cx=0;
+}
+char * PromptUser(char * prompt) {
+    size_t bufsize=128;
+    char * buf=malloc(bufsize);
+    size_t buflen=0;
+    buf[0]='\0';
+    while (1) {
+        SetStatusMsg(prompt,buf);
+        refresh();
+        int c=ReadKey();
 
+        if (c=='\r') {
+            if (buflen!=0) {
+                SetStatusMsg("");
+                return buf;
+            }
+        } else if (iscntrl(c) && c<128) {
+            if (buflen==bufsize-1) {
+                bufsize*=2;
+                buf=realloc(buf,bufsize);
+            }
+            buf[buflen++]=c;
+            printf(buf);
+            buf[buflen]='\0';
+        }
+    }
+}
 void MoveCursor(int key) {
     EditorRow * row=(editor.cy>=editor.numrows)?NULL:&editor.row[editor.cy];
     switch (key) {
@@ -313,7 +352,7 @@ void ProcessKey() {
 
     switch (cur) {
         case '\r':
-            //todo
+            InsertNewline();
             break;
         case BKSP:
         case ctrl('h'):
@@ -454,14 +493,16 @@ void OpenFile(char * filename) {
     ssize_t linelen;
     while ((linelen = getline(&line, &linecap, fp)) != -1) {
         while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) linelen--;
-        NewRow(line, linelen);
+        NewRow(editor.numrows,line, linelen);
     }
     free(line);
     fclose(fp);
     editor.dirty=0;
 }
 void SaveFile(void) {
-    if (editor.filename == NULL) return;
+    if (editor.filename == NULL) {
+        editor.filename=PromptUser("Save as %s:");
+    }
     int len;
     char *buf = RowsToString(&len);
     int fd = open(editor.filename, O_RDWR | O_CREAT, 0644);
