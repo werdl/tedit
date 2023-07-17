@@ -45,7 +45,8 @@ struct GlobalConfig {
 };
 enum HighlightColors {
     HL_NORMAL=0,
-    HL_NUMBER
+    HL_NUMBER,
+    HL_MATCH
 };
 struct GlobalConfig editor;
 void TildeColumn(struct AppendBuffer * ab);
@@ -223,6 +224,7 @@ void UpdateSyntax(EditorRow * row) {
 int SyntaxToColor(int hl) {
     switch (hl) {
         case HL_NUMBER: return 31;
+        case HL_MATCH: return 34;
         default: return 37;
     }
 }
@@ -392,7 +394,15 @@ void FindStrCallback(char * query, int key) {
 
     static int LastMatch=-1;
     static int direction=1;
+    static int SaveHighlightLine;
+    static char * SavedHighlight=NULL;
 
+    if (SavedHighlight) {
+        memcpy(editor.row[SaveHighlightLine].hl,SavedHighlight,editor.row[SaveHighlightLine].RenderSize);
+        free(SavedHighlight);
+        SavedHighlight=NULL;
+    
+    }
     if (key == '\r' || key == '\x1b') {
         LastMatch=-1;
         direction=1;
@@ -420,6 +430,11 @@ void FindStrCallback(char * query, int key) {
             editor.cy=current;
             editor.cx=RenderToChars(row,match-row->render);
             editor.RowOffset=editor.numrows;
+
+            SaveHighlightLine=current;
+            SavedHighlight=malloc(row->RenderSize);
+            memcpy(SavedHighlight,row->hl,row->RenderSize);
+            memset(&row->hl[match - row->render], HL_MATCH, strlen(query));
             break;
         }
     }
@@ -521,40 +536,47 @@ int WinSize(int * rows, int * columns) {
 
 void TildeColumn(struct AppendBuffer *ab) {
     int y;
-    for (y = 0; y < editor.screenrows-4; y++) {
+    for (y = 0; y < editor.screenrows-2; y++) {
         int filerow = y + editor.RowOffset;
         if (filerow >= editor.numrows) {
-        if (editor.numrows == 0 && y == editor.screenrows / 3) {
-            char welcome[80];
-            int welcomelen = snprintf(welcome, sizeof(welcome),
-            "Tedit editor -- version %s", TEDIT_V);
-            if (welcomelen > editor.screencols) welcomelen = editor.screencols;
-            int padding = (editor.screencols - welcomelen) / 2;
-            if (padding) {
+            if (editor.numrows == 0 && y == editor.screenrows / 3) {
+                char welcome[80];
+                int welcomelen = snprintf(welcome, sizeof(welcome),
+                "Tedit editor -- version %s", TEDIT_V);
+                if (welcomelen > editor.screencols) welcomelen = editor.screencols;
+                int padding = (editor.screencols - welcomelen) / 2;
+                if (padding) {
+                    AppendAB(ab, "~", 1);
+                    padding--;
+                }
+                while (padding--) AppendAB(ab, " ", 1);
+                AppendAB(ab, welcome, welcomelen);
+            } else {
                 AppendAB(ab, "~", 1);
-                padding--;
             }
-            while (padding--) AppendAB(ab, " ", 1);
-            AppendAB(ab, welcome, welcomelen);
-        } else {
-            AppendAB(ab, "~", 1);
-        }
         } else {
             int len = editor.row[filerow].RenderSize - editor.ColumnOffset;
             if (len < 0) len = 0;
             if (len > editor.screencols) len = editor.screencols;
             char *c = &editor.row[filerow].render[editor.ColumnOffset];
             unsigned char *hl = &editor.row[filerow].hl[editor.ColumnOffset];
+            int CurrentColor=-1;
             int j;
             for (j = 0; j < len; j++) {
                 if (hl[j] == HL_NORMAL) {
-                    AppendAB(ab, "\x1b[39m", 5);
+                    if (CurrentColor!=-1) {
+                        AppendAB(ab, "\x1b[39m", 5);
+                        CurrentColor=-1;
+                    }
                     AppendAB(ab, &c[j], 1);
                 } else {
                     int color = SyntaxToColor(hl[j]);
-                    char buf[16];
-                    int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                    AppendAB(ab, buf, clen);
+                    if (color!=CurrentColor) {
+                        CurrentColor=color;
+                        char buf[16];
+                        int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                        AppendAB(ab, buf, clen);
+                    }
                     AppendAB(ab, &c[j], 1);
                 }
             }
