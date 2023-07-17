@@ -211,14 +211,23 @@ int ReadKey(void) {
     } 
     return cur;
 }
+int IsSeperator(int c) {
+    return isspace(c) || c=='\0' || strchr(",.()+-/*+~%<>[];",c)!=NULL;
+}
 void UpdateSyntax(EditorRow * row) {
     row->hl=realloc(row->hl,row->RenderSize);
     memset(row->hl,HL_NORMAL,row->RenderSize);
 
+    int prevsep=1;
     for (int i=0;i<row->RenderSize;i++) {
-        if (isdigit(row->render[i])) {
+        unsigned char PreviousHighlight=i>0?row->hl[i-1]:HL_NORMAL;
+        if ((isdigit(row->render[i]) && (prevsep || PreviousHighlight == HL_NUMBER)) ||
+        (row->render[i] == '.' && PreviousHighlight == HL_NUMBER)) {
             row->hl[i]=HL_NUMBER;
+            prevsep=0;
+            continue;
         }
+        prevsep=IsSeperator(row->render[i]);
     }
 }
 int SyntaxToColor(int hl) {
