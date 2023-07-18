@@ -25,6 +25,7 @@
 typedef struct {
     char * filetype;
     char ** filematch;
+    char * SingleLineCommentStart;
     int flags;
 } SyntaxInfo;
 typedef struct {
@@ -55,7 +56,8 @@ enum HighlightColors {
     HL_NORMAL=0,
     HL_NUMBER,
     HL_MATCH,
-    HL_STRING
+    HL_STRING,
+    HL_COMMENT
 };
 struct GlobalConfig editor;
 char * CHighlightingExtemsopms[]={".c",".h",".cpp",".cxx",",hpp",".hxx",NULL};
@@ -63,6 +65,7 @@ SyntaxInfo HighlightDatabase[] = {
     {
         "C",
         CHighlightingExtemsopms,
+        "//",
         HIGHLIGHT_NUMS | HIGHLIGHT_STRING
     }
 };
@@ -237,13 +240,26 @@ void UpdateSyntax(EditorRow * row) {
     memset(row->hl,HL_NORMAL,row->RenderSize);
 
     if (editor.syntax==NULL) return;
+    char * scs=editor.syntax->SingleLineCommentStart;
+    int ScsLen=scs?strlen(scs):0;
     int prevsep=1;
     int instring=0;
     for (int i=0;i<row->RenderSize;i++) {
         unsigned char PreviousHighlight=i>0?row->hl[i-1]:HL_NORMAL;
+        if (ScsLen && !instring) {
+            if (!strncmp(&row->render[i],scs,ScsLen)) {
+                memset(&row->hl[i],HL_COMMENT,row->RenderSize-i);
+                break;
+            }
+        }
         if (editor.syntax->flags & HIGHLIGHT_STRING) {
             if (instring) {
                 row->hl[i]=HL_STRING;
+                if (row->render[i]=='\\'&&i+1<row->RenderSize) {
+                    row->hl[i+1]=HL_STRING;
+                    i++;// extra
+                    continue;
+                }
                 if (row->render[i]==instring) instring=0;
                 prevsep=1;
                 continue;
@@ -271,6 +287,7 @@ int SyntaxToColor(int hl) {
         case HL_NUMBER: return 31;
         case HL_MATCH: return 34;
         case HL_STRING: return 35;
+        case HL_COMMENT: return 36;
         default: return 37;
     }
 }
@@ -747,3 +764,4 @@ int main(int argc, char ** argv) {
     
     return 0;
 }
+// step 167
