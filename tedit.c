@@ -20,6 +20,13 @@
 #define TEDIT_V "0.1.0"
 #define TEDIT_TAB 4
 #define TEDIT_QUIT_TIME 2
+#define HIGHLIGHT_NUMS (1<<0)
+#define HIGHLIGHT_STRING (1<<1)
+typedef struct {
+    char * filetype;
+    char ** filematch;
+    int flags;
+} SyntaxInfo;
 typedef struct {
     int size;
     char * chars;
@@ -42,13 +49,24 @@ struct GlobalConfig {
     char StatusMsg[80];
     time_t StatusTime;
     int dirty;
+    SyntaxInfo * syntax;
 };
 enum HighlightColors {
     HL_NORMAL=0,
     HL_NUMBER,
-    HL_MATCH
+    HL_MATCH,
+    HL_STRING
 };
 struct GlobalConfig editor;
+char * CHighlightingExtemsopms[]={".c",".h",".cpp",".cxx",",hpp",".hxx",NULL};
+SyntaxInfo HighlightDatabase[] = {
+    {
+        "C",
+        CHighlightingExtemsopms,
+        HIGHLIGHT_NUMS | HIGHLIGHT_STRING
+    }
+};
+#define HighlightDBEntries (sizeof(HighlightDatabase)/sizeof(HighlightDatabase[0]))
 void TildeColumn(struct AppendBuffer * ab);
 void SaveFile(void);
 void SetStatusMsg(const char *fmt,...);
@@ -86,7 +104,7 @@ void DrawStatusBar(struct AppendBuffer * ab) {
     AppendAB(ab,"\x1b[7m",4);
     char status[80],rstatus[80];
     int len=snprintf(status,sizeof(status),"%.20s - %d lines %s",editor.filename?editor.filename:"[New File]",editor.numrows,editor.dirty?"(modified)":"");
-    int rlen=snprintf(rstatus,sizeof(rstatus),"line %d",editor.cy+1);
+    int rlen=snprintf(rstatus,sizeof(rstatus),"%s line %d",editor.syntax?editor.syntax->filetype:"No Filetype",editor.cy+1);
     if (len>editor.screencols) len=editor.screencols;
     AppendAB(ab,status,len);
     while (len<editor.screencols) {
@@ -218,14 +236,32 @@ void UpdateSyntax(EditorRow * row) {
     row->hl=realloc(row->hl,row->RenderSize);
     memset(row->hl,HL_NORMAL,row->RenderSize);
 
+    if (editor.syntax==NULL) return;
     int prevsep=1;
+    int instring=0;
     for (int i=0;i<row->RenderSize;i++) {
         unsigned char PreviousHighlight=i>0?row->hl[i-1]:HL_NORMAL;
-        if ((isdigit(row->render[i]) && (prevsep || PreviousHighlight == HL_NUMBER)) ||
-        (row->render[i] == '.' && PreviousHighlight == HL_NUMBER)) {
-            row->hl[i]=HL_NUMBER;
-            prevsep=0;
-            continue;
+        if (editor.syntax->flags & HIGHLIGHT_STRING) {
+            if (instring) {
+                row->hl[i]=HL_STRING;
+                if (row->render[i]==instring) instring=0;
+                prevsep=1;
+                continue;
+            } else {
+                 if (row->render[i]=='"' || row->render[i]=='\'') {
+                    instring=row->render[i];
+                    row->hl[i]=HL_STRING;
+                    continue;
+                 }
+            }
+        }
+        if (editor.syntax->flags & HIGHLIGHT_NUMS) {
+            if ((isdigit(row->render[i]) && (prevsep || PreviousHighlight == HL_NUMBER)) ||
+            (row->render[i] == '.' && PreviousHighlight == HL_NUMBER)) {
+                row->hl[i]=HL_NUMBER;
+                prevsep=0;
+                continue;
+            }
         }
         prevsep=IsSeperator(row->render[i]);
     }
@@ -234,7 +270,28 @@ int SyntaxToColor(int hl) {
     switch (hl) {
         case HL_NUMBER: return 31;
         case HL_MATCH: return 34;
+        case HL_STRING: return 35;
         default: return 37;
+    }
+}
+void SelectSyntaxHighlighter(void) {
+    editor.syntax=NULL;
+    if (editor.filename==NULL) return;
+
+    char * ext=strrchr(editor.filename,'.');
+    for (unsigned int j=0;j<HighlightDBEntries;j++) {
+        SyntaxInfo * s=&HighlightDatabase[j];
+        unsigned int i=0;
+        while (s->filematch[i]) {
+            int IsExt=(s->filematch[i][0]=='.');
+            if ((IsExt && ext && !strcmp(ext,s->filematch[i])) || (!IsExt && strstr(editor.filename,s->filematch[i]))) {
+                editor.syntax=s;
+                for (int fr=0;fr<editor.numrows;fr++) {
+                    UpdateSyntax(&editor.row[fr]);
+                }
+                return;
+            }
+        }
     }
 }
 void UpdateRow(EditorRow * row) {
@@ -618,6 +675,8 @@ char * RowsToString(int * buflen) {
 void OpenFile(char * filename) {
     free(editor.filename);
     editor.filename=strdup(filename);
+
+    SelectSyntaxHighlighter();
     FILE * fp=fopen(filename,"r");
 
     if (!fp) die("fopen");
@@ -639,6 +698,7 @@ void SaveFile(void) {
             SetStatusMsg("Aborted Save Operation");
             return;
         }
+        SelectSyntaxHighlighter();
     }
     int len;
     char *buf = RowsToString(&len);
@@ -670,6 +730,7 @@ void init(void) {
     editor.filename=NULL;
     editor.dirty=0;
     editor.StatusMsg[0]='\0';
+    editor.syntax=NULL;
     if (WinSize(&editor.screenrows,&editor.screencols)==-1) die("WinSize");
 }
 int main(int argc, char ** argv) {
@@ -686,4 +747,3 @@ int main(int argc, char ** argv) {
     
     return 0;
 }
-//step 148
