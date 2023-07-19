@@ -25,6 +25,7 @@
 typedef struct {
     char * filetype;
     char ** filematch;
+    char ** keywords;
     char * SingleLineCommentStart;
     int flags;
 } SyntaxInfo;
@@ -57,14 +58,27 @@ enum HighlightColors {
     HL_NUMBER,
     HL_MATCH,
     HL_STRING,
-    HL_COMMENT
+    HL_COMMENT,
+    HL_KEYWORD1,
+    HL_KEYWORD2,
+    HL_KEYWORD3,
+    HL_BRACKET,
+    HL_COMPARISON
 };
 struct GlobalConfig editor;
 char * CHighlightingExtemsopms[]={".c",".h",".cpp",".cxx",",hpp",".hxx",NULL};
+char * CHighlightingKeywords[]={
+    "switch","while","for","break","continue","return","if","else","case",
+
+    "struct|","union|","typedef|","static|","const|","#define|","class|","enum|",
+
+    "int%","long%","float%","double%","char%","unsigned%","signed%","void%"
+};
 SyntaxInfo HighlightDatabase[] = {
     {
         "C",
         CHighlightingExtemsopms,
+        CHighlightingKeywords,
         "//",
         HIGHLIGHT_NUMS | HIGHLIGHT_STRING
     }
@@ -240,11 +254,14 @@ void UpdateSyntax(EditorRow * row) {
     memset(row->hl,HL_NORMAL,row->RenderSize);
 
     if (editor.syntax==NULL) return;
+    char ** keywords=editor.syntax->keywords;
     char * scs=editor.syntax->SingleLineCommentStart;
     int ScsLen=scs?strlen(scs):0;
     int prevsep=1;
+    int prevdig=0;
     int instring=0;
     for (int i=0;i<row->RenderSize;i++) {
+        
         unsigned char PreviousHighlight=i>0?row->hl[i-1]:HL_NORMAL;
         if (ScsLen && !instring) {
             if (!strncmp(&row->render[i],scs,ScsLen)) {
@@ -272,14 +289,42 @@ void UpdateSyntax(EditorRow * row) {
             }
         }
         if (editor.syntax->flags & HIGHLIGHT_NUMS) {
-            if ((isdigit(row->render[i]) && (prevsep || PreviousHighlight == HL_NUMBER)) ||
+            if (((isdigit(row->render[i]) || (prevdig && row->render[i]=='x')) && (prevsep || PreviousHighlight == HL_NUMBER)) ||
             (row->render[i] == '.' && PreviousHighlight == HL_NUMBER)) {
                 row->hl[i]=HL_NUMBER;
                 prevsep=0;
                 continue;
             }
         }
+        if (prevsep) {
+            int j;
+            for (j=0;keywords[j];j++) {
+                int jlen=strlen(keywords[j]);
+                int kw2=keywords[j][jlen-1]=='|';
+                int kw3=keywords[j][jlen-1]=='%';
+                if (kw2 || kw3) jlen--;
+
+                int KW_CONST=kw2?HL_KEYWORD1:HL_KEYWORD2;
+                if (kw3) KW_CONST=HL_KEYWORD3;
+                if (!strncmp(&row->render[i],keywords[j],jlen) && IsSeperator(row->render[i+jlen])) {
+                    memset(&row->hl[i],KW_CONST,jlen);
+                    i+=jlen-1;
+                    break;
+                }
+            }
+            if (keywords[j] != NULL) {
+                prevsep = 0;
+                continue;
+            }
+        }
+        if (strchr("[](){}",row->render[i])!=NULL && !instring) {
+            memset(&row->hl[i],HL_BRACKET,1);
+        }
+        if (strchr("<>=!",row->render[i])!=NULL && !instring) {
+            memset(&row->hl[i],HL_COMPARISON,1);
+        }
         prevsep=IsSeperator(row->render[i]);
+        prevdig=isdigit(row->render[i]) || (prevdig) && row->render[i]=='x';
     }
 }
 int SyntaxToColor(int hl) {
@@ -288,6 +333,11 @@ int SyntaxToColor(int hl) {
         case HL_MATCH: return 34;
         case HL_STRING: return 35;
         case HL_COMMENT: return 36;
+        case HL_KEYWORD1: return 33;
+        case HL_KEYWORD2: return 32;
+        case HL_KEYWORD3: return 96;
+        case HL_BRACKET: return 92;
+        case HL_COMPARISON: return 93;
         default: return 37;
     }
 }
