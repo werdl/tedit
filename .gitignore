@@ -1,4 +1,4 @@
-/.vscode
-/tedit
-/test.c
-a.out
+*
+!.gitignore
+!tedit.c
+!README.md

@@ -1,7 +1,4 @@
-#define _DEFAULT_SOURCE
-#define _BSD_SOURCE
-#define _GNU_SOURCE
-
+#include <string.h>
 #include <unistd.h>
 #include <termios.h>
 #include <ctype.h>
@@ -14,13 +11,26 @@
 #include <time.h>
 #include <stdarg.h>
 #include <fcntl.h>
-#include "appbuf.c"
-
 #define TEDIT_V "0.1.0"
 #define TEDIT_TAB 4
 #define TEDIT_QUIT_TIME 2
 #define HIGHLIGHT_NUMS (1<<0)
 #define HIGHLIGHT_STRING (1<<1)
+struct AppendBuffer {
+    char * b;
+    int len;
+};
+#define AB_INIT {NULL,0}
+void AppendAB(struct AppendBuffer * ab,char * s,int len) {
+    char * new=realloc(ab->b,ab->len+len);
+    if (new==NULL) return;
+    memcpy(&new[ab->len],s,len);
+    ab->b=new;
+    ab->len+=len;
+}
+void FreeAB(struct AppendBuffer * ab) {
+    free(ab->b);
+}
 typedef struct {
     char * filetype;
     char ** filematch;
@@ -74,21 +84,17 @@ struct GlobalConfig editor;
 char * CHighlightingExtemsopms[]={".c",".h",".cpp",".cxx",",hpp",".hxx",NULL};
 char * CHighlightingKeywords[]={
     "switch","while","for","break","continue","return","if","else","case",
-
     "struct|","union|","typedef|","static|","const|","#define|","class|","enum|",
-
     "int%","long%","float%","double%","char%","unsigned%","signed%","void%","bool%"
 };
 char * PythonKW[]={
             "for","while","break","continue","def","return","import","from"
-
             "int|","float|","double|","str|","bool|","range|",
-
             "if%","elif%","else%","match%","case%"
         };
 char * PythonExt[]={
             ".py"
-        };
+};
 SyntaxInfo HighlightDatabase[] = {
     {
         "C",
@@ -133,13 +139,11 @@ int RenderToChars(EditorRow *row, int rx) {
   }
   return cx;
 }
-
 void ScrollScreen(void) {
     editor.rx=editor.cx;
     if (editor.cy<editor.numrows) editor.rx=CharsToRender(&editor.row[editor.cy],editor.cx);
     if (editor.cy<editor.RowOffset) editor.RowOffset=editor.cy;
     if (editor.cy>editor.RowOffset+editor.screenrows) editor.RowOffset=editor.cy-editor.screenrows-1;
-
     if (editor.cx<editor.ColumnOffset) editor.ColumnOffset=editor.rx;
     if (editor.cx>=editor.ColumnOffset+editor.screencols) editor.ColumnOffset=editor.rx-editor.screencols+1;
 }
@@ -173,7 +177,6 @@ void refresh() {
     struct AppendBuffer _ab = AB_INIT;
     AppendAB(&_ab, "\x1b[?25l", 6);
     AppendAB(&_ab,"\x1b[H", 3);
-
     TildeColumn(&_ab);
     DrawStatusBar(&_ab);
     DrawSecondBar(&_ab);
@@ -181,7 +184,6 @@ void refresh() {
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (editor.cy-editor.RowOffset) + 1,( (editor.rx-editor.ColumnOffset) + 1));
     AppendAB(&_ab, buf, strlen(buf));
     AppendAB(&_ab, "\x1b[?25h", 6);
-
     write(STDOUT_FILENO, _ab.b, _ab.len);
     FreeAB(&_ab);
 }
@@ -209,8 +211,6 @@ void RawMode(void) {
     raw.c_oflag &= ~(OPOST);
     raw.c_cflag |= (CS8); // bitmask
     raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-
-
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 1;
     // raw mode flags
@@ -280,7 +280,6 @@ int IsSeperator(int c) {
 void UpdateSyntax(EditorRow * row) {
     row->hl=realloc(row->hl,row->RenderSize);
     memset(row->hl,HL_NORMAL,row->RenderSize);
-
     if (editor.syntax==NULL) return;
     char ** keywords=editor.syntax->keywords;
     char * scs=editor.syntax->SingleLineCommentStart;
@@ -355,7 +354,6 @@ void UpdateSyntax(EditorRow * row) {
                 int kw2=keywords[j][jlen-1]=='|';
                 int kw3=keywords[j][jlen-1]=='%';
                 if (kw2 || kw3) jlen--;
-
                 int KW_CONST=kw2?HL_KEYWORD1:HL_KEYWORD2;
                 if (kw3) KW_CONST=HL_KEYWORD3;
                 if (!strncmp(&row->render[i],keywords[j],jlen) && IsSeperator(row->render[i+jlen])) {
@@ -400,7 +398,6 @@ int SyntaxToColor(int hl) {
 void SelectSyntaxHighlighter(void) {
     editor.syntax=NULL;
     if (editor.filename==NULL) return;
-
     for (unsigned int j=0;j<HighlightDBEntries;j++) {
         SyntaxInfo * s=&HighlightDatabase[j];
         unsigned int i=0;
@@ -427,7 +424,6 @@ void UpdateRow(EditorRow * row) {
     for (int i=0;i<row->size;i++) {
         if (row->chars[i]=='\t') tabs++;
     }
-
     free(row->render);
     row->render=malloc(row->size+1+tabs*(TEDIT_TAB-1));
     int idx=0;
@@ -445,8 +441,6 @@ void UpdateRow(EditorRow * row) {
 }
 void NewRow(int at, char * s,size_t len) {
     if (at<0 || at > editor.numrows) return;
-
-
     editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
     memmove(&editor.row[at+1],&editor.row[at],sizeof(EditorRow)*(editor.numrows-at));
     for (int j = at + 1; j <= editor.numrows; j++) editor.row[j].idx++;
@@ -512,7 +506,6 @@ void DeleteChar(void) {
         RowAppendString(&editor.row[editor.cy-1],row->chars,row->size);
         DeleteRow(editor.cy);
         editor.cy--;
-
     }
 }
 void InsertChar(int c) {
@@ -541,7 +534,6 @@ char * PromptUser(char * prompt, void (*callback)(char *, int)) {
         SetStatusMsg(prompt,buf);
         refresh();
         int c=ReadKey();
-
         if (c == DELETE_KEY || c == ctrl('h') || c == BKSP) {
             if (buflen != 0) buf[--buflen] = '\0';
         } else if (c=='\x1b') {
@@ -591,12 +583,10 @@ void MoveCursor(int key) {
     }
 }
 void FindStrCallback(char * query, int key) {
-
     static int LastMatch=-1;
     static int direction=1;
     static int SaveHighlightLine;
     static char * SavedHighlight=NULL;
-
     if (SavedHighlight) {
         memcpy(editor.row[SaveHighlightLine].hl,SavedHighlight,editor.row[SaveHighlightLine].RenderSize);
         free(SavedHighlight);
@@ -622,7 +612,6 @@ void FindStrCallback(char * query, int key) {
         current+=direction;
         if (current==-1) current=editor.numrows-1;
         else if (current==editor.numrows) current=0;
-
         EditorRow * row=&editor.row[current];
         char * match=strstr(row->render,query);
         if (match) {
@@ -630,7 +619,6 @@ void FindStrCallback(char * query, int key) {
             editor.cy=current;
             editor.cx=RenderToChars(row,match-row->render);
             editor.RowOffset=editor.numrows;
-
             SaveHighlightLine=current;
             SavedHighlight=malloc(row->RenderSize);
             memcpy(SavedHighlight,row->hl,row->RenderSize);
@@ -645,11 +633,9 @@ void FindStr(void) {
         free(query);
     }
 }
-void ProcessKey() {
+void ProcessKey(void) {
     static int QuitTimes=TEDIT_QUIT_TIME;
-    static int shifting=0;
     int cur=ReadKey();
-
     switch (cur) {
         case '\r':
             InsertNewline();
@@ -686,6 +672,7 @@ void ProcessKey() {
                     if (editor.cy>editor.numrows) editor.cy=editor.numrows;
                 }
             }
+            break;
         case HOME_KEY:
             editor.cx=0;
             break;
@@ -736,7 +723,6 @@ int WinSize(int * rows, int * columns) {
         return 0;
     }
 }
-
 void TildeColumn(struct AppendBuffer *ab) {
     int y;
     for (y = 0; y < editor.screenrows-2; y++) {
@@ -795,20 +781,16 @@ void TildeColumn(struct AppendBuffer *ab) {
             }
             AppendAB(ab, "\x1b[39m", 5);
         }
-
         AppendAB(ab, "\x1b[K", 3);
         AppendAB(ab, "\r\n", 2);
     }
 }
-
-
 char * RowsToString(int * buflen) {
     int totlen=0;
     for (int j=0;j<editor.numrows;j++) {
         totlen+=editor.row[j].size+1;
     }
     *buflen=totlen;
-
     char * buf=malloc(totlen);
     char * p=buf;
     for (int j=0;j<editor.numrows;j++) {
@@ -822,10 +804,8 @@ char * RowsToString(int * buflen) {
 void OpenFile(char * filename) {
     free(editor.filename);
     editor.filename=strdup(filename);
-
     SelectSyntaxHighlighter();
     FILE * fp=fopen(filename,"r");
-
     if (!fp) die("fopen");
     char * line=NULL;
     size_t linecap=0;
@@ -894,7 +874,5 @@ int main(int argc, char ** argv) {
         refresh();
         ProcessKey();
     }
-    
     return 0;
 }
-// step 167
