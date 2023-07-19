@@ -16,7 +16,6 @@
 #include <fcntl.h>
 #include "appbuf.c"
 
-
 #define TEDIT_V "0.1.0"
 #define TEDIT_TAB 4
 #define TEDIT_QUIT_TIME 2
@@ -27,6 +26,8 @@ typedef struct {
     char ** filematch;
     char ** keywords;
     char * SingleLineCommentStart;
+    char * MultilineEnd;
+    char * MultilineStart;
     int flags;
 } SyntaxInfo;
 typedef struct {
@@ -35,6 +36,8 @@ typedef struct {
     int RenderSize;
     char * render;
     unsigned char * hl;
+    int idx;
+    int HL_OPEN_COMMENT;
 } EditorRow;
 struct GlobalConfig {
     int cx;
@@ -63,7 +66,8 @@ enum HighlightColors {
     HL_KEYWORD2,
     HL_KEYWORD3,
     HL_BRACKET,
-    HL_COMPARISON
+    HL_COMPARISON,
+    HL_MLCOMMENT
 };
 struct GlobalConfig editor;
 char * CHighlightingExtemsopms[]={".c",".h",".cpp",".cxx",",hpp",".hxx",NULL};
@@ -72,14 +76,35 @@ char * CHighlightingKeywords[]={
 
     "struct|","union|","typedef|","static|","const|","#define|","class|","enum|",
 
-    "int%","long%","float%","double%","char%","unsigned%","signed%","void%"
+    "int%","long%","float%","double%","char%","unsigned%","signed%","void%","bool%"
 };
+char * PythonKW[]={
+            "for","while","break","continue","def","return","import","from"
+
+            "int|","float|","double|","str|","bool|","range|",
+
+            "if%","elif%","else%","match%","case%"
+        };
+char * PythonExt[]={
+            ".py"
+        };
 SyntaxInfo HighlightDatabase[] = {
     {
         "C",
         CHighlightingExtemsopms,
         CHighlightingKeywords,
         "//",
+        "*/",
+        "/*",
+        HIGHLIGHT_NUMS | HIGHLIGHT_STRING
+    },
+    {
+        "Python",
+        PythonExt,
+        PythonKW,
+        "#",
+        "\"\"\"",
+        "\"\"\"",
         HIGHLIGHT_NUMS | HIGHLIGHT_STRING
     }
 };
@@ -256,10 +281,15 @@ void UpdateSyntax(EditorRow * row) {
     if (editor.syntax==NULL) return;
     char ** keywords=editor.syntax->keywords;
     char * scs=editor.syntax->SingleLineCommentStart;
+    char * mcs=editor.syntax->MultilineStart;
+    char * mce=editor.syntax->MultilineEnd;
     int ScsLen=scs?strlen(scs):0;
+    int MceLen=scs?strlen(mce):0;
+    int McsLen=scs?strlen(mcs):0;
     int prevsep=1;
     int prevdig=0;
     int instring=0;
+    int incomment=(row->idx > 0 && editor.row[row->idx - 1].HL_OPEN_COMMENT);
     for (int i=0;i<row->RenderSize;i++) {
         
         unsigned char PreviousHighlight=i>0?row->hl[i-1]:HL_NORMAL;
@@ -267,6 +297,25 @@ void UpdateSyntax(EditorRow * row) {
             if (!strncmp(&row->render[i],scs,ScsLen)) {
                 memset(&row->hl[i],HL_COMMENT,row->RenderSize-i);
                 break;
+            }
+        }
+        if (McsLen && MceLen && !instring) {
+            if (incomment) {
+                row->hl[i] = HL_MLCOMMENT;
+                if (!strncmp(&row->render[i], mce, MceLen)) {
+                    memset(&row->hl[i], HL_MLCOMMENT, MceLen);
+                    i += MceLen-1;
+                    incomment = 0;
+                    prevsep = 1;
+                    continue;
+                } else {
+                    continue;
+                }
+            } else if (!strncmp(&row->render[i], mcs, McsLen)) {
+                memset(&row->hl[i], HL_MLCOMMENT, McsLen);
+                i += McsLen-1;
+                incomment = 1;
+                continue;
             }
         }
         if (editor.syntax->flags & HIGHLIGHT_STRING) {
@@ -324,8 +373,11 @@ void UpdateSyntax(EditorRow * row) {
             memset(&row->hl[i],HL_COMPARISON,1);
         }
         prevsep=IsSeperator(row->render[i]);
-        prevdig=isdigit(row->render[i]) || (prevdig) && row->render[i]=='x';
+        prevdig=isdigit(row->render[i]) || ((prevdig) && row->render[i]=='x');
     }
+    int changed=(row->HL_OPEN_COMMENT!=incomment);
+    row->HL_OPEN_COMMENT=incomment;
+    if (changed && row->idx+1<editor.numrows) UpdateSyntax(&editor.row[row->idx+1]);
 }
 int SyntaxToColor(int hl) {
     switch (hl) {
@@ -333,6 +385,7 @@ int SyntaxToColor(int hl) {
         case HL_MATCH: return 34;
         case HL_STRING: return 35;
         case HL_COMMENT: return 36;
+        case HL_MLCOMMENT: return 36;
         case HL_KEYWORD1: return 33;
         case HL_KEYWORD2: return 32;
         case HL_KEYWORD3: return 96;
@@ -345,21 +398,26 @@ void SelectSyntaxHighlighter(void) {
     editor.syntax=NULL;
     if (editor.filename==NULL) return;
 
-    char * ext=strrchr(editor.filename,'.');
     for (unsigned int j=0;j<HighlightDBEntries;j++) {
         SyntaxInfo * s=&HighlightDatabase[j];
         unsigned int i=0;
         while (s->filematch[i]) {
-            int IsExt=(s->filematch[i][0]=='.');
-            if ((IsExt && ext && !strcmp(ext,s->filematch[i])) || (!IsExt && strstr(editor.filename,s->filematch[i]))) {
-                editor.syntax=s;
-                for (int fr=0;fr<editor.numrows;fr++) {
-                    UpdateSyntax(&editor.row[fr]);
+            char * p=strstr(editor.filename,s->filematch[i]);
+            int patlen=strlen(s->filematch[i]);
+            if (p!=NULL) {
+                if (s->filematch[i][0] != '.'|| (p[patlen]=='\0')) {
+                    editor.syntax=s;
+                    for (int fr=0;fr<editor.numrows;fr++) {
+                        UpdateSyntax(&editor.row[fr]);
+                    }
+                    return;
                 }
-                return;
             }
+            i++;
         }
     }
+    editor.syntax=NULL;
+    return;
 }
 void UpdateRow(EditorRow * row) {
     int tabs=0;
@@ -388,13 +446,16 @@ void NewRow(int at, char * s,size_t len) {
 
     editor.row=realloc((void *)editor.row,sizeof(EditorRow)*(editor.numrows+1));
     memmove(&editor.row[at+1],&editor.row[at],sizeof(EditorRow)*(editor.numrows-at));
+    for (int j = at + 1; j <= editor.numrows; j++) editor.row[j].idx++;
+    editor.row[at].idx=at;
     editor.row[at].size=len;
     editor.row[at].chars=malloc(len + 1);
     memcpy(editor.row[at].chars,s,len);
     editor.row[at].chars[len]='\0';
     editor.row[at].RenderSize=0;
     editor.row[at].render=NULL;
-    editor.row[at].hl=NULL;    
+    editor.row[at].hl=NULL;  
+    editor.row[at].HL_OPEN_COMMENT=0;  
     UpdateRow(&editor.row[at]);
     editor.numrows++;
     editor.dirty++;
@@ -408,6 +469,9 @@ void DeleteRow(int at) {
     if (at<0 || at>=editor.numrows) return;
     FreeRow(&editor.row[at]);
     memmove(&editor.row[at], &editor.row[at + 1], sizeof(EditorRow) * (editor.numrows - at - 1));
+    for (int j = at; j < editor.numrows - 1; j++) editor.row[j].idx--;
+    editor.numrows--;
+    editor.dirty++;
 }
 void RowInsertChar(EditorRow * row, int at, int c) {
     if (at<0 || at>row->size) at=row->size;
@@ -696,7 +760,12 @@ void TildeColumn(struct AppendBuffer *ab) {
             int CurrentColor=-1;
             int j;
             for (j = 0; j < len; j++) {
-                if (hl[j] == HL_NORMAL) {
+                if (iscntrl(c[j])) {
+                    char sym=(c[j]<=26) ? '@'+c[j]:'?';
+                    AppendAB(ab, "\x1b[7m", 4);
+                    AppendAB(ab, &sym, 1);
+                    AppendAB(ab, "\x1b[m", 3);
+                } else if (hl[j] == HL_NORMAL) {
                     if (CurrentColor!=-1) {
                         AppendAB(ab, "\x1b[39m", 5);
                         CurrentColor=-1;
@@ -776,6 +845,8 @@ void SaveFile(void) {
                 close(fd);
                 free(buf);
                 SetStatusMsg("%d bytes written to disk", len);
+                editor.dirty=0;
+                refresh();
                 return;
             }
         }
@@ -784,6 +855,7 @@ void SaveFile(void) {
     free(buf);
     SetStatusMsg("I/O error: %s",strerror(errno));
     editor.dirty=0;
+    refresh();
 }
 void init(void) {
     editor.cx=0;
