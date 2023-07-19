@@ -36,6 +36,7 @@ typedef struct {
     int RenderSize;
     char * render;
     unsigned char * hl;
+    char * selected;
     int idx;
     int HL_OPEN_COMMENT;
 } EditorRow;
@@ -225,7 +226,8 @@ enum SpecialKeys {
     PAGE_DOWN,
     HOME_KEY,
     END_KEY,
-    DELETE_KEY
+    DELETE_KEY,
+    INSERT_KEY
 };
 int ReadKey(void) {
     int retcode;
@@ -240,9 +242,10 @@ int ReadKey(void) {
         if (seq[0] == '[') {
             if (seq[1] >= '0' && seq[1] <= '9') {
                 if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
-                    if (seq[2] == '~') {
+                if (seq[2] == '~') {
                     switch (seq[1]) {
                         case '1': return HOME_KEY;
+                        case '2': return INSERT_KEY;
                         case '3': return DELETE_KEY;
                         case '4': return END_KEY;
                         case '5': return PAGE_UP;
@@ -644,6 +647,7 @@ void FindStr(void) {
 }
 void ProcessKey() {
     static int QuitTimes=TEDIT_QUIT_TIME;
+    static int shifting=0;
     int cur=ReadKey();
 
     switch (cur) {
@@ -685,6 +689,8 @@ void ProcessKey() {
         case HOME_KEY:
             editor.cx=0;
             break;
+        case INSERT_KEY:
+            
         case END_KEY:
             if (editor.cy<editor.numrows) editor.cx=editor.row[editor.cy].size;
             break;
@@ -735,6 +741,11 @@ void TildeColumn(struct AppendBuffer *ab) {
     int y;
     for (y = 0; y < editor.screenrows-2; y++) {
         int filerow = y + editor.RowOffset;
+        char buf[32];
+        snprintf(buf,32,"%d",filerow+1);
+        AppendAB(ab, "\x1b[32;1m", 8);
+        AppendAB(ab,buf,strlen(buf));
+        AppendAB(ab, "\x1b[30;0m ", 8);
         if (filerow >= editor.numrows) {
             if (editor.numrows == 0 && y == editor.screenrows / 3) {
                 char welcome[80];
